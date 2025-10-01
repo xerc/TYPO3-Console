@@ -50,14 +50,24 @@ class MysqlCommand
      */
     public function mysql(array $additionalArguments = [], $inputStream = STDIN, $outputCallback = null, $interactive = false)
     {
-        $commandLine = ['mysql'];
-        $commandLine = array_merge($commandLine, $this->buildConnectionArguments(), $additionalArguments);
-        $process = new Process($commandLine, null, null, $inputStream, 0.0);
-        if ($interactive) {
-            // I did not figure out how to change pipes with symfony/process
-            $interactiveProcess = new InteractiveProcess();
+        $argv = array_merge(['mysql'], $this->buildConnectionArguments(), $additionalArguments);
 
-            return $interactiveProcess->run($process->getCommandLine());
+        if (isset($this->dbConfig['password'])) {
+            $command = implode(' ', array_map('escapeshellarg', array_merge($argv, ['-p'])));
+
+            $interactiveProcess = new InteractiveProcess();
+            return $interactiveProcess->run(
+                $command,                           // CMD
+                $inputStream,                       // STDIN
+                $this->dbConfig['password'] . "\n"  // TTY
+            );
+        }
+
+        $process = new Process($argv, null, null, $inputStream, 0.0);
+
+        if ($interactive) {
+            $interactiveProcess = new InteractiveProcess();
+            return $interactiveProcess->run($process->getCommandLine(), $inputStream, null);
         }
 
         return $process->run($this->buildDefaultOutputCallback($outputCallback));
@@ -71,12 +81,22 @@ class MysqlCommand
      */
     public function mysqldump(array $additionalArguments = [], $outputCallback = null, string $connectionName = 'Default'): int
     {
-        $commandLine = ['mysqldump'];
-        $commandLine = array_merge($commandLine, $this->buildConnectionArguments(), $additionalArguments);
-        $process = new Process($commandLine, null, null, null, 0.0);
+        $argv = array_merge(['mysqldump'], $this->buildConnectionArguments(), $additionalArguments);
 
-        echo  chr(10) . sprintf('-- Dump of TYPO3 Connection "%s"', $connectionName) . chr(10);
+        echo PHP_EOL . sprintf('-- Dump of TYPO3 Connection "%s"', $connectionName) . PHP_EOL;
 
+        if (isset($this->dbConfig['password'])) {
+            $command = implode(' ', array_map('escapeshellarg', array_merge($argv, ['-p'])));
+
+            $interactiveProcess = new InteractiveProcess();
+            return $interactiveProcess->run(
+                $command,                           // CMD
+                null,                               // STDIN
+                $this->dbConfig['password'] . "\n"  // TTY
+            );
+        }
+
+        $process = new Process($argv, null, null, null, 0.0);
         return $process->run($this->buildDefaultOutputCallback($outputCallback));
     }
 
@@ -101,8 +121,11 @@ class MysqlCommand
 
     private function buildConnectionArguments(): array
     {
-        if ($configFile = $this->createTemporaryMysqlConfigurationFile()) {
-            $arguments[] = '--defaults-file=' . $configFile;
+        $arguments = [];
+
+        if (!empty($this->dbConfig['user'])) {
+            $arguments[] = '-u';
+            $arguments[] = $this->dbConfig['user'];
         }
         if (!empty($this->dbConfig['host'])) {
             $arguments[] = '-h';
@@ -119,40 +142,10 @@ class MysqlCommand
         if (isset($this->dbConfig['driverOptions']['flags']) && (int)$this->dbConfig['driverOptions']['flags'] === MYSQLI_CLIENT_SSL) {
             $arguments[] = '--ssl';
         }
-        $arguments[] = $this->dbConfig['dbname'];
+        if (!empty($this->dbConfig['dbname'])) {
+            $arguments[] = $this->dbConfig['dbname'];
+        }
 
         return $arguments;
-    }
-
-    private function createTemporaryMysqlConfigurationFile()
-    {
-        if (empty($this->dbConfig['user']) && !isset($this->dbConfig['password'])) {
-            return null;
-        }
-        if (self::$mysqlTempFile !== null && file_exists(self::$mysqlTempFile)) {
-            return self::$mysqlTempFile;
-        }
-        $userDefinition = '';
-        $passwordDefinition = '';
-        if (!empty($this->dbConfig['user'])) {
-            $userDefinition = sprintf('user="%s"', addcslashes($this->dbConfig['user'], '"\\'));
-        }
-        if (!empty($this->dbConfig['password'])) {
-            $passwordDefinition = sprintf('password="%s"', addcslashes($this->dbConfig['password'], '"\\'));
-        }
-        $confFileContent = <<<EOF
-[mysqldump]
-$userDefinition
-$passwordDefinition
-
-[client]
-$userDefinition
-$passwordDefinition
-EOF;
-        self::$mysqlTempFile = tempnam(sys_get_temp_dir(), 'typo3_console_my_cnf_');
-        file_put_contents(self::$mysqlTempFile, $confFileContent);
-        register_shutdown_function('unlink', self::$mysqlTempFile);
-
-        return self::$mysqlTempFile;
     }
 }
